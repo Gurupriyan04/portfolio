@@ -1,0 +1,22 @@
+{
+  "name": "guru-portfolio-backend",
+  "version": "1.0.0",
+  "description": "Tiny backend that receives contact form submissions from the portfolio site and sends them to Gmail via Nodemailer.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "nodemailer": "^6.9.14",
+    "dotenv": "^16.4.5",
+    "express-rate-limit": "^7.4.0",
+    "mongoose": "^8.5.1"
+  }
+}
