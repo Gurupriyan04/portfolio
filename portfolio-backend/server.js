@@ -1,22 +1,19 @@
 /* ==========================================================================
    GURU PRIYAN C — PORTFOLIO CONTACT BACKEND
    A minimal Express server with one real job: receive a contact form
-   submission from the portfolio site and email it to you via Gmail.
-
-   Your Gmail credentials live ONLY here, as environment variables — never
-   in the frontend code, never committed to git. See .env.example.
+   submission from the portfolio site and email it to you via Resend.
    ========================================================================== */
 
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 const rateLimit = require('express-rate-limit');
 const mongoose = require('mongoose');
 const Message = require('./models/Message');
 
 const app = express();
-app.set('trust proxy', 1);
+app.set('trust proxy', 1); // Render sits behind a reverse proxy — this fixes rate-limit IP detection
 app.use(express.json());
 
 /* ---------------------------------------------------------------------
@@ -43,7 +40,6 @@ const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (curl, server-to-server health checks)
     if (!origin) return callback(null, true);
     if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
       return callback(null, true);
@@ -53,8 +49,7 @@ app.use(cors({
 }));
 
 /* ---------------------------------------------------------------------
-   Basic rate limiting — 5 submissions per 15 minutes per IP, to keep
-   this from being used to spam your inbox or abuse your Gmail account.
+   Basic rate limiting — 5 submissions per 15 minutes per IP
 --------------------------------------------------------------------- */
 const contactLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -63,22 +58,13 @@ const contactLimiter = rateLimit({
 });
 
 /* ---------------------------------------------------------------------
-   Mail transport — Gmail via App Password (SMTP)
-   Required env vars: GMAIL_USER, GMAIL_APP_PASSWORD, RECEIVER_EMAIL
+   Mail sending — Resend API (HTTPS-based, not SMTP)
+   Render's free tier blocks outbound SMTP ports, so we send email via
+   Resend's API instead, which works over regular HTTPS like any API call.
+   Required env var: RESEND_API_KEY
 --------------------------------------------------------------------- */
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 587,
-  secure: false,
-  requireTLS: true,
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD
-  },
-  connectionTimeout: 20000,
-  greetingTimeout: 20000,
-  socketTimeout: 20000
-});
+const resend = new Resend(process.env.RESEND_API_KEY);
+
 /* ---------------------------------------------------------------------
    Routes
 --------------------------------------------------------------------- */
@@ -94,9 +80,8 @@ app.post('/api/contact', contactLimiter, async (req, res) => {
   try {
     const { name, email, message, _honeypot } = req.body || {};
 
-    // Simple honeypot: a hidden field bots tend to fill in, humans never see it
     if (_honeypot) {
-      return res.json({ success: true }); // pretend success, silently drop
+      return res.json({ success: true });
     }
 
     if (!name || !email || !message) {
@@ -111,7 +96,6 @@ app.post('/api/contact', contactLimiter, async (req, res) => {
 
     const receiver = process.env.RECEIVER_EMAIL || process.env.GMAIL_USER;
 
-    // Save to the database first, so we still have a record even if the email send fails
     let savedMessage = null;
     if (mongoose.connection.readyState === 1) {
       try {
@@ -125,10 +109,10 @@ app.post('/api/contact', contactLimiter, async (req, res) => {
       }
     }
 
-    await transporter.sendMail({
-      from: `"Portfolio Contact Form" <${process.env.GMAIL_USER}>`,
+    const { data, error } = await resend.emails.send({
+      from: 'Portfolio Contact Form <onboarding@resend.dev>',
       to: receiver,
-      replyTo: email,
+      reply_to: email,
       subject: `New portfolio message from ${name}`,
       text: `From: ${name} <${email}>\n\n${message}`,
       html: `
@@ -137,6 +121,11 @@ app.post('/api/contact', contactLimiter, async (req, res) => {
         <p>${escapeHtml(message).replace(/\n/g, '<br>')}</p>
       `
     });
+
+    if (error) {
+      console.error('Resend error:', error);
+      return res.status(500).json({ success: false, error: 'Could not send the email. Please try again or email me directly.' });
+    }
 
     if (savedMessage) {
       savedMessage.emailSent = true;
@@ -157,8 +146,6 @@ function escapeHtml(str) {
 /* ---------------------------------------------------------------------
    Protected admin endpoint — view saved messages.
    Requires header:  X-Admin-Key: <your ADMIN_API_KEY>
-   This key is separate from anything stored in the public data.json —
-   never put it there. Enter it directly in the admin panel's Messages tab.
 --------------------------------------------------------------------- */
 function requireAdminKey(req, res, next) {
   const key = req.get('X-Admin-Key');
